@@ -1,0 +1,137 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from skimage import util          # for adding noise easily (optional)
+
+# ------------------------------------------------------------
+# Non-Local Means Denoising (full image, vectorised patches)
+# ------------------------------------------------------------
+def non_local_means(img, h=10, patch_size=3, search_window=21):
+    """
+    Apply Non-Local Means denoising to a grayscale image.
+
+    Parameters:
+        img          : 2D numpy array, dtype float32, range [0,255]
+        h            : filtering strength (higher = more smoothing)
+        patch_size   : side length of square patch (must be odd)
+        search_window: side length of search neighbourhood (must be odd)
+
+    Returns:
+        denoised     : 2D numpy array, same shape as img
+    """
+    img = img.astype(np.float32)
+    rows, cols = img.shape
+
+    # Half-patch size
+    p = patch_size // 2
+    # Half-search window size
+    d = search_window // 2
+
+    # Pad the image to handle borders
+    pad_width = max(p, d)
+    padded = np.pad(img, pad_width, mode='reflect')
+
+    # Precompute all patches (vectorised sliding window)
+    patches = np.zeros((rows, cols, patch_size, patch_size), dtype=np.float32)
+    for i in range(rows):
+        for j in range(cols):
+            patches[i, j] = padded[i + pad_width - p : i + pad_width + p + 1,
+                                   j + pad_width - p : j + pad_width + p + 1]
+
+    # Prepare output array
+    denoised = np.zeros_like(img)
+
+    # Normalisation constant for Gaussian weights (integral over patch differences)
+    patch_area = patch_size * patch_size
+    beta = 1 / (patch_area * (h ** 2))
+
+    # Main loop: for each pixel
+    for i in range(rows):
+        for j in range(cols):
+            # Reference patch
+            ref_patch = patches[i, j]
+
+            # Boundaries of the search window (clamp to image limits)
+            i_min = max(i - d, 0)
+            i_max = min(i + d + 1, rows)
+            j_min = max(j - d, 0)
+            j_max = min(j + d + 1, cols)
+
+            # Collect all patches in the search window
+            w_sum = 0.0
+            accum = 0.0
+
+            for ni in range(i_min, i_max):
+                for nj in range(j_min, j_max):
+                    # Candidate patch
+                    cand_patch = patches[ni, nj]
+
+                    # Squared L2 distance between patches
+                    diff = ref_patch - cand_patch
+                    dist2 = np.sum(diff * diff)
+
+                    # Gaussian weight
+                    w = np.exp(-beta * dist2)
+
+                    # Accumulate weighted pixel value
+                    accum += w * img[ni, nj]
+                    w_sum += w
+
+            # Normalise
+            if w_sum > 0:
+                denoised[i, j] = accum / w_sum
+            else:
+                denoised[i, j] = img[i, j]
+
+    return denoised
+
+# ------------------------------------------------------------
+# Example usage
+# ------------------------------------------------------------
+# 1. Load or create an image
+try:
+    original = Image.open('/content/homomorphic_filtered.png').convert('L')
+    original = np.array(original, dtype=np.float32)
+except:
+    print("Using synthetic image (checkerboard + smooth gradient).")
+    x = np.linspace(0, 1, 256)
+    y = np.linspace(0, 1, 256)
+    X, Y = np.meshgrid(x, y)
+    original = (np.sin(10 * X) * np.cos(10 * Y) + 1) * 127
+    original = np.clip(original, 0, 255).astype(np.float32)
+
+# 2. Add Gaussian noise
+noise_var = 400
+noisy = original + np.random.normal(0, np.sqrt(noise_var), original.shape)
+noisy = np.clip(noisy, 0, 255)
+
+# 3. Apply Non‑Local Means
+print("Denoising... this may take a while for large images.")
+denoised = non_local_means(noisy, h=15, patch_size=5, search_window=15)
+
+# 4. Convert to uint8 for saving
+denoised_uint8 = np.clip(denoised, 0, 255).astype(np.uint8)
+
+# 5. Display results
+plt.figure(figsize=(15, 5))
+plt.subplot(1, 3, 1)
+plt.imshow(original, cmap='gray')
+plt.title('Original')
+plt.axis('off')
+
+plt.subplot(1, 3, 2)
+plt.imshow(noisy, cmap='gray')
+plt.title(f'Noisy (σ={np.sqrt(noise_var):.1f})')
+plt.axis('off')
+
+plt.subplot(1, 3, 3)
+plt.imshow(denoised_uint8, cmap='gray')
+plt.title('NLM denoised')
+plt.axis('off')
+
+plt.tight_layout()
+plt.show()
+
+# 6. Save result
+Image.fromarray(denoised_uint8).save('nlm_denoised.png')
+print("Denoised image saved as 'nlm_denoised.png'")
